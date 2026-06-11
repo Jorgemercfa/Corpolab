@@ -77,10 +77,11 @@ function normalizeItem(section, item) {
   }
   if (section === 'admins') {
     const role = (item.role || item.rol || 'admin').trim() || 'admin';
+    const trimmedUid = String(item.uid || '').trim();
     return {
       email: (item.email || '').trim(),
       name: (item.name || '').trim(),
-      uid: (item.uid || '').trim() || null,
+      uid: trimmedUid ? trimmedUid : null,
       rol: role,
       role,
       active: item.active !== false,
@@ -119,7 +120,8 @@ function validateItems(section) {
     }
     if (section === 'admins') {
       const email = String(item.email || '').trim();
-      if (!email.includes('@')) {
+      const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      if (!isValidEmail) {
         throw new Error(`El correo en administrador #${index + 1} no es válido.`);
       }
       const role = String(item.rol || item.role || '').trim();
