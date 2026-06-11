@@ -4,7 +4,10 @@ import Navbar from '@/components/Navbar-item.vue';
 import Footer from '@/components/Footer-item.vue';
 import { articles } from '@/data/articles.js';
 
-const categories = ['Todos', 'Economía', 'Política', 'Sociología', 'Historia', 'Cultura'];
+const categories = computed(() => [
+  'Todos',
+  ...new Set(articles.map((article) => article.category).filter(Boolean)),
+]);
 const selectedCategory = ref('Todos');
 
 const filteredArticles = computed(() => {
@@ -41,8 +44,8 @@ function formatDate(dateStr) {
     <div class="articles-hero-content">
       <h1 class="articles-hero-title">Artículos</h1>
       <p class="articles-hero-desc">
-        Investigaciones y papers académicos en ciencias sociales, economía, política y cultura.
-        Explora el conocimiento producido por investigadores comprometidos con la realidad latinoamericana.
+        Investigaciones y análisis prácticos en derecho corporativo para emprendedores.
+        Explora guías legales para estructurar, proteger y escalar tu empresa con seguridad jurídica.
       </p>
     </div>
   </section>
