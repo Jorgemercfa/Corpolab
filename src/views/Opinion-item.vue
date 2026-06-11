@@ -36,8 +36,8 @@ function formatDate(dateStr) {
     <div class="opinion-hero-content">
       <h1 class="opinion-hero-title">Columna de Opinión</h1>
       <p class="opinion-hero-desc">
-        Voces y perspectivas críticas sobre política, economía, sociedad y cultura.
-        Un espacio para el análisis independiente y el debate informado.
+        Voces y perspectivas sobre los principales retos legales del emprendimiento.
+        Un espacio para debatir derecho corporativo aplicado al crecimiento empresarial.
       </p>
     </div>
   </section>

@@ -16,6 +16,9 @@
       <router-link @click="closeMenu" to="/opinion" class="text-navbar"
         >Opinión</router-link
       >
+      <router-link @click="closeMenu" to="/admin" class="text-navbar"
+        >Admin</router-link
+      >
       
     </div>
     <div class="hamburger" @click="toggleMenu">☰</div>
