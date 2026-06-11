@@ -76,7 +76,7 @@ function normalizeItem(section, item) {
     };
   }
   if (section === 'admins') {
-    const role = (item.rol || item.role || 'admin').trim() || 'admin';
+    const role = (item.role || item.rol || 'admin').trim() || 'admin';
     return {
       email: (item.email || '').trim(),
       name: (item.name || '').trim(),
@@ -169,7 +169,7 @@ async function loadSection(section) {
     if (section === 'admins') {
       const normalizedAdmins = docs.map((item) => ({
         ...item,
-        rol: item.rol || item.role || 'admin',
+        rol: item.role || item.rol || 'admin',
         role: item.role || item.rol || 'admin',
         active: item.active !== false,
       }));
@@ -586,7 +586,7 @@ async function resetCurrentSection() {
 
                   <label>
                     Rol
-                    <input v-model="item.rol" type="text" />
+                    <input v-model="item.role" type="text" />
                   </label>
                 </template>
 
