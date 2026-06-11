@@ -1,18 +1,24 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import Navbar from '@/components/Navbar-item.vue';
 import Footer from '@/components/Footer-item.vue';
-import { articles } from '@/data/articles.js';
+import { useCollection } from '@/composables/useFirestore';
+
+const { items: articles, loading, error, fetchItems } = useCollection('articles');
+
+onMounted(() => {
+  fetchItems();
+});
 
 const categories = computed(() => [
   'Todos',
-  ...new Set(articles.map((article) => article.category).filter(Boolean)),
+  ...new Set(articles.value.map((article) => article.category).filter(Boolean)),
 ]);
 const selectedCategory = ref('Todos');
 
 const filteredArticles = computed(() => {
-  if (selectedCategory.value === 'Todos') return articles;
-  return articles.filter(a => a.category === selectedCategory.value);
+  if (selectedCategory.value === 'Todos') return articles.value;
+  return articles.value.filter(a => a.category === selectedCategory.value);
 });
 
 const selectedArticle = ref(null);
@@ -67,8 +73,10 @@ function formatDate(dateStr) {
 
   <!-- Grid de artículos -->
   <section class="articles-grid-section">
-    <div class="articles-grid">
-      <div v-for="article in filteredArticles" :key="article.id" class="article-card">
+    <div v-if="loading" class="articles-loading">Cargando artículos…</div>
+    <p v-else-if="error" class="articles-error">{{ error }}</p>
+    <div v-else class="articles-grid">
+      <div v-for="article in filteredArticles" :key="article._docId" class="article-card">
         <div class="article-card-header">
           <span class="article-badge">{{ article.category }}</span>
           <span class="article-date">{{ formatDate(article.date) }}</span>
@@ -80,7 +88,7 @@ function formatDate(dateStr) {
       </div>
     </div>
 
-    <p v-if="filteredArticles.length === 0" class="articles-empty">
+    <p v-if="!loading && !error && filteredArticles.length === 0" class="articles-empty">
       No hay artículos en esta categoría aún.
     </p>
   </section>
@@ -223,6 +231,16 @@ function formatDate(dateStr) {
 
 .articles-empty {
   @apply text-center text-[#888] text-base py-10;
+  font-family: 'Inter', sans-serif;
+}
+
+.articles-loading {
+  @apply text-center py-10 text-[#888] text-[0.95rem];
+  font-family: 'Inter', sans-serif;
+}
+
+.articles-error {
+  @apply text-center py-6 text-[#b92d2d] text-[0.9rem];
   font-family: 'Inter', sans-serif;
 }
 

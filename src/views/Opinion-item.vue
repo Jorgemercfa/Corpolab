@@ -1,11 +1,19 @@
 <script setup>
-import { ref } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import Navbar from '@/components/Navbar-item.vue';
 import Footer from '@/components/Footer-item.vue';
-import { opinions } from '@/data/opinions.js';
+import { useCollection } from '@/composables/useFirestore';
 
-const featuredOpinion = opinions.find(o => o.featured);
-const gridOpinions = opinions.filter(o => !o.featured || o.id !== featuredOpinion?.id);
+const { items: opinions, loading, error, fetchItems } = useCollection('opinions');
+
+onMounted(() => {
+  fetchItems();
+});
+
+const featuredOpinion = computed(() => opinions.value.find(o => o.featured));
+const gridOpinions = computed(() =>
+  opinions.value.filter(o => !o.featured || o._docId !== featuredOpinion.value?._docId)
+);
 
 const selectedOpinion = ref(null);
 
@@ -43,7 +51,7 @@ function formatDate(dateStr) {
   </section>
 
   <!-- Columna destacada -->
-  <section v-if="featuredOpinion" class="opinion-featured-section">
+  <section v-if="!loading && !error && featuredOpinion" class="opinion-featured-section">
     <div class="opinion-featured-inner">
       <span class="opinion-featured-label">Columna destacada</span>
       <span class="opinion-badge">{{ featuredOpinion.category }}</span>
@@ -62,10 +70,12 @@ function formatDate(dateStr) {
   <!-- Grid de columnas -->
   <section class="opinion-grid-section">
     <h2 class="opinion-grid-heading">Todas las columnas</h2>
-    <div class="opinion-grid">
+    <div v-if="loading" class="opinion-loading">Cargando columnas…</div>
+    <p v-else-if="error" class="opinion-error">{{ error }}</p>
+    <div v-else class="opinion-grid">
       <div
         v-for="opinion in gridOpinions"
-        :key="opinion.id"
+        :key="opinion._docId"
         class="opinion-card"
       >
         <div class="opinion-card-header">
@@ -264,6 +274,16 @@ function formatDate(dateStr) {
 .opinion-card-btn:hover {
   background: #456a9a;
   color: white;
+}
+
+.opinion-loading {
+  @apply text-center py-10 text-[#888] text-[0.95rem];
+  font-family: 'Inter', sans-serif;
+}
+
+.opinion-error {
+  @apply text-center py-6 text-[#b92d2d] text-[0.9rem];
+  font-family: 'Inter', sans-serif;
 }
 
 /* ===== MODAL ===== */
