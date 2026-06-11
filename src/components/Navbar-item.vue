@@ -16,7 +16,7 @@
       <router-link @click="closeMenu" to="/opinion" class="text-navbar"
         >Opinión</router-link
       >
-      <router-link @click="closeMenu" to="/admin" class="text-navbar"
+      <router-link @click="closeMenu" to="/admin" class="text-navbar" aria-label="Panel administrativo"
         >Admin</router-link
       >
       

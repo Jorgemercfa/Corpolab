@@ -5,8 +5,8 @@ import Footer from '@/components/Footer-item.vue';
 import { articles as sourceArticles } from '@/data/articles.js';
 import { opinions as sourceOpinions } from '@/data/opinions.js';
 
-const ADMIN_USER = 'admin';
-const ADMIN_PASSWORD = 'corpolab-admin-2026';
+const ADMIN_USER = (process.env.VUE_APP_ADMIN_USER || 'admin').toLowerCase();
+const ADMIN_PASSWORD = process.env.VUE_APP_ADMIN_PASSWORD || 'corpolab-admin-2026';
 const SESSION_STORAGE_KEY = 'corpolab-admin-session';
 
 const GITHUB_USER = process.env.VUE_APP_GITHUB_USER || '';
@@ -66,16 +66,13 @@ function deepClone(data) {
 
 function textToBase64(text) {
   const bytes = new TextEncoder().encode(text);
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary);
+  return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
 }
 
 function buildGitHubHeaders() {
+  const authHeader = ['Bearer', TOKEN].join(' ');
   return {
-    Authorization: `token ${TOKEN}`,
+    Authorization: authHeader,
     'Content-Type': 'application/json',
   };
 }
@@ -177,7 +174,7 @@ async function uploadSection(section) {
     const endpoint = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}`;
 
     const body = {
-      message: `update ${path} from admin panel`,
+      message: `chore(admin): update ${path}`,
       content: textToBase64(fileToExport(section)),
       branch: BRANCH,
     };
@@ -200,7 +197,7 @@ async function uploadSection(section) {
   } catch (error) {
     console.error(error);
     panelError.value = error?.message
-      || 'No se pudo guardar en GitHub. Revisa el token, permisos de contenido y la configuración de variables de entorno.';
+      || 'No se pudo guardar en GitHub. Verifica VUE_APP_GITHUB_USER/REPO/BRANCH/TOKEN y que el token tenga permisos de Contents (Read and write).';
   } finally {
     isLoading.value = false;
   }
@@ -285,6 +282,9 @@ function logoutAdmin() {
 
       <p class="warning-text">
         ⚠️ Para subir cambios remotos necesitas un token de GitHub con permisos de contenido.
+      </p>
+      <p class="warning-text warning-text--muted">
+        Este panel es de administración básica en frontend: no uses tokens de alto privilegio y evita exponerlo en entornos públicos.
       </p>
       <p v-if="!canSyncWithGitHub" class="warning-text warning-text--muted">
         Variables faltantes: puedes editar visualmente, pero el guardado remoto está deshabilitado.
