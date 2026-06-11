@@ -103,20 +103,24 @@ function validateItems(section) {
 /* ======================================
    Admin access check
 ====================================== */
+
+// Validates a Firestore admin document. Accepts both 'rol' (legacy schema) and 'role'.
+function isValidAdmin(data) {
+  return data.active === true && (data.rol === 'admin' || data.role === 'admin');
+}
+
 async function checkAdminAccess(user) {
   try {
     const q = query(collection(db, 'admins'), where('uid', '==', user.uid));
     const snapshot = await getDocs(q);
     if (!snapshot.empty) {
-      const data = snapshot.docs[0].data();
-      return data.active === true && (data.rol === 'admin' || data.role === 'admin');
+      return isValidAdmin(snapshot.docs[0].data());
     }
     // Fallback: query by email
     const qEmail = query(collection(db, 'admins'), where('email', '==', user.email));
     const snapEmail = await getDocs(qEmail);
     if (!snapEmail.empty) {
-      const data = snapEmail.docs[0].data();
-      return data.active === true && (data.rol === 'admin' || data.role === 'admin');
+      return isValidAdmin(snapEmail.docs[0].data());
     }
     return false;
   } catch (err) {
