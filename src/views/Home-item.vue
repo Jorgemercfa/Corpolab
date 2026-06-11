@@ -3,15 +3,17 @@ import Navbar from '@/components/Navbar-item.vue';
 import Footer from '@/components/Footer-item.vue';
 
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
-import { articles } from '@/data/articles.js';
-import { opinions } from '@/data/opinions.js';
+import { useCollection } from '@/composables/useFirestore';
+
+const { items: articles, loading: articlesLoading, error: articlesError, fetchItems: fetchArticles } = useCollection('articles');
+const { items: opinions, loading: opinionsLoading, error: opinionsError, fetchItems: fetchOpinions } = useCollection('opinions');
 
 const latestArticles = computed(() =>
-  [...articles].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3)
+  articles.value.slice(0, 3)
 );
 
 const featuredOpinions = computed(() =>
-  opinions.filter(o => o.featured).slice(0, 2)
+  opinions.value.filter(o => o.featured).slice(0, 2)
 );
 
 function formatDate(dateStr) {
@@ -56,6 +58,8 @@ const stopCarousel = () => {
 
 onMounted(() => {
   startCarousel();
+  fetchArticles();
+  fetchOpinions();
 });
 
 onBeforeUnmount(() => {
@@ -88,10 +92,12 @@ onBeforeUnmount(() => {
     <!-- Sección: Últimos Artículos -->
     <section class="home-section">
       <h2 class="title-home">Últimos Artículos</h2>
-      <div class="home-articles-grid">
+      <div v-if="articlesLoading" class="home-loading">Cargando artículos…</div>
+      <p v-else-if="articlesError" class="home-error">{{ articlesError }}</p>
+      <div v-else class="home-articles-grid">
         <div
           v-for="article in latestArticles"
-          :key="article.id"
+          :key="article._docId"
           class="home-article-card"
         >
           <div class="home-article-card-top">
@@ -110,10 +116,12 @@ onBeforeUnmount(() => {
     <!-- Sección: Columnas de Opinión Destacadas -->
     <section class="home-section home-section--alt">
       <h2 class="title-home">Columnas de Opinión Destacadas</h2>
-      <div class="home-opinions-grid">
+      <div v-if="opinionsLoading" class="home-loading">Cargando columnas…</div>
+      <p v-else-if="opinionsError" class="home-error">{{ opinionsError }}</p>
+      <div v-else class="home-opinions-grid">
         <div
           v-for="opinion in featuredOpinions"
-          :key="opinion.id"
+          :key="opinion._docId"
           class="home-opinion-card"
         >
           <span class="home-badge home-badge--blue">{{ opinion.category }}</span>
@@ -482,6 +490,16 @@ onBeforeUnmount(() => {
 
 .home-view-all-btn:hover {
   background: #b85e0e;
+}
+
+.home-loading {
+  @apply text-center py-8 text-[#888] text-[0.95rem];
+  font-family: 'Inter', sans-serif;
+}
+
+.home-error {
+  @apply text-center py-4 text-[#b92d2d] text-[0.9rem];
+  font-family: 'Inter', sans-serif;
 }
 
 @media (min-width: 768px) {

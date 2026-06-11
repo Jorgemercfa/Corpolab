@@ -1,46 +1,41 @@
 <script setup>
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted, onUnmounted } from 'vue';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import {
+  collection,
+  getDocs,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  query,
+  where,
+} from 'firebase/firestore';
 import Navbar from '@/components/Navbar-item.vue';
 import Footer from '@/components/Footer-item.vue';
-import { articles as sourceArticles } from '@/data/articles.js';
-import { opinions as sourceOpinions } from '@/data/opinions.js';
+import { auth, db } from '@/firebase';
 
-const ADMIN_USER = (process.env.VUE_APP_ADMIN_USER || 'admin').toLowerCase();
-const ADMIN_PASSWORD = process.env.VUE_APP_ADMIN_PASSWORD || 'corpolab-admin-2026';
-const SESSION_STORAGE_KEY = 'corpolab-admin-session';
+/* ======================================
+   Auth & admin state
+====================================== */
+const currentUser = ref(null);
+const isAdmin = ref(false);
+const authLoading = ref(true);
 
-const GITHUB_USER = process.env.VUE_APP_GITHUB_USER || '';
-const GITHUB_REPO = process.env.VUE_APP_GITHUB_REPO || '';
-const BRANCH = process.env.VUE_APP_GITHUB_BRANCH || 'main';
-const TOKEN = process.env.VUE_APP_GITHUB_TOKEN || '';
-
-const FILE_PATHS = {
-  articles: 'src/data/articles.js',
-  opinions: 'src/data/opinions.js',
-};
-
-const canSyncWithGitHub = computed(() =>
-  Boolean(GITHUB_USER && GITHUB_REPO && TOKEN),
-);
-
-const loginForm = ref({ user: '', password: '' });
+const loginForm = ref({ email: '', password: '' });
 const loginError = ref('');
+const loginLoading = ref(false);
+const showLoginForm = ref(false);
+
+/* ======================================
+   Panel state
+====================================== */
 const panelError = ref('');
 const successMessage = ref('');
 const isLoading = ref(false);
-const showLoginForm = ref(false);
 const activeSection = ref('articles');
-const isAdmin = ref(sessionStorage.getItem(SESSION_STORAGE_KEY) === 'true');
 
-const initialData = {
-  articles: deepClone(sourceArticles),
-  opinions: deepClone(sourceOpinions),
-};
-
-const draftData = ref({
-  articles: deepClone(sourceArticles),
-  opinions: deepClone(sourceOpinions),
-});
+const draftData = ref({ articles: [], opinions: [] });
 
 const activeItems = computed({
   get() {
@@ -55,37 +50,13 @@ const sectionLabel = computed(() =>
   activeSection.value === 'articles' ? 'Artículos' : 'Opiniones',
 );
 
-const requiredFields = {
-  articles: ['id', 'title', 'authors', 'category', 'date', 'abstract', 'pdfUrl'],
-  opinions: ['id', 'title', 'author', 'authorBio', 'date', 'excerpt', 'content', 'category'],
-};
+/* ======================================
+   Helpers
+====================================== */
 
-function deepClone(data) {
-  return JSON.parse(JSON.stringify(data));
-}
-
-function textToBase64(text) {
-  const bytes = new TextEncoder().encode(text);
-  return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''));
-}
-
-function buildGitHubHeaders() {
-  const authHeader = ['Bearer', TOKEN].join(' ');
-  return {
-    Authorization: authHeader,
-    'Content-Type': 'application/json',
-  };
-}
-
-function sanitizeId(value, fallbackId) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallbackId;
-}
-
-function normalizeItem(section, item, fallbackId) {
+function normalizeItem(section, item) {
   if (section === 'articles') {
     return {
-      id: sanitizeId(item.id, fallbackId),
       title: (item.title || '').trim(),
       authors: (item.authors || '').trim(),
       category: (item.category || '').trim(),
@@ -96,9 +67,7 @@ function normalizeItem(section, item, fallbackId) {
       featured: Boolean(item.featured),
     };
   }
-
   return {
-    id: sanitizeId(item.id, fallbackId),
     title: (item.title || '').trim(),
     author: (item.author || '').trim(),
     authorBio: (item.authorBio || '').trim(),
@@ -110,13 +79,16 @@ function normalizeItem(section, item, fallbackId) {
   };
 }
 
+const requiredFields = {
+  articles: ['title', 'authors', 'category', 'date', 'abstract'],
+  opinions: ['title', 'author', 'authorBio', 'date', 'excerpt', 'content', 'category'],
+};
+
 function validateItems(section) {
   const fields = requiredFields[section];
   const items = draftData.value[section];
-
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-
     for (const field of fields) {
       const value = item[field];
       if (value === null || value === undefined || String(value).trim() === '') {
@@ -128,88 +100,178 @@ function validateItems(section) {
   }
 }
 
-function fileToExport(section) {
-  const fileData = draftData.value[section].map((item, index) =>
-    normalizeItem(section, item, index + 1),
-  );
+/* ======================================
+   Admin access check
+====================================== */
 
-  const exportedName = section === 'articles' ? 'articles' : 'opinions';
-  return `export const ${exportedName} = ${JSON.stringify(fileData, null, 2)};\n`;
+// Validates a Firestore admin document. Accepts both 'rol' (legacy schema) and 'role'.
+function isValidAdmin(data) {
+  return data.active === true && (data.rol === 'admin' || data.role === 'admin');
 }
 
-async function fetchFileSha(path) {
-  const endpoint = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}?ref=${BRANCH}`;
-  const response = await fetch(endpoint, {
-    method: 'GET',
-    headers: buildGitHubHeaders(),
-  });
-
-  if (response.status === 404) {
-    return null;
-  }
-
-  if (!response.ok) {
-    throw new Error(`No se pudo leer ${path} (${response.status}).`);
-  }
-
-  const fileData = await response.json();
-  return fileData.sha || null;
-}
-
-async function uploadSection(section) {
-  panelError.value = '';
-  successMessage.value = '';
-
+async function checkAdminAccess(user) {
   try {
-    validateItems(section);
+    const q = query(collection(db, 'admins'), where('uid', '==', user.uid));
+    const snapshot = await getDocs(q);
+    if (!snapshot.empty) {
+      return isValidAdmin(snapshot.docs[0].data());
+    }
+    // Fallback: query by email
+    const qEmail = query(collection(db, 'admins'), where('email', '==', user.email));
+    const snapEmail = await getDocs(qEmail);
+    if (!snapEmail.empty) {
+      return isValidAdmin(snapEmail.docs[0].data());
+    }
+    return false;
+  } catch (err) {
+    console.error('[Admin] Error verificando acceso:', err);
+    return false;
+  }
+}
 
-    if (!canSyncWithGitHub.value) {
-      panelError.value = 'El guardado remoto está deshabilitado porque faltan variables de entorno de GitHub.';
+/* ======================================
+   Load data from Firestore
+====================================== */
+async function loadSection(section) {
+  try {
+    const snapshot = await getDocs(collection(db, section));
+    const docs = snapshot.docs.map((d) => ({ _docId: d.id, ...d.data() }));
+    docs.sort((a, b) => {
+      if (!a.date && !b.date) return 0;
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+      return b.date.localeCompare(a.date);
+    });
+    draftData.value[section] = docs;
+  } catch (err) {
+    panelError.value = `Error cargando ${section}: ${err.message}`;
+  }
+}
+
+async function loadAllSections() {
+  isLoading.value = true;
+  await Promise.all([loadSection('articles'), loadSection('opinions')]);
+  isLoading.value = false;
+}
+
+/* ======================================
+   Auth listener
+====================================== */
+let unsubscribeAuth = null;
+
+onMounted(() => {
+  unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      currentUser.value = user;
+      const ok = await checkAdminAccess(user);
+      isAdmin.value = ok;
+      if (ok) {
+        await loadAllSections();
+      }
+    } else {
+      currentUser.value = null;
+      isAdmin.value = false;
+    }
+    authLoading.value = false;
+  });
+});
+
+onUnmounted(() => {
+  if (unsubscribeAuth) unsubscribeAuth();
+});
+
+/* ======================================
+   Login / Logout
+====================================== */
+async function loginAdmin() {
+  loginError.value = '';
+  loginLoading.value = true;
+  try {
+    const credential = await signInWithEmailAndPassword(
+      auth,
+      loginForm.value.email.trim(),
+      loginForm.value.password,
+    );
+    const ok = await checkAdminAccess(credential.user);
+    if (!ok) {
+      await signOut(auth);
+      loginError.value = 'Tu cuenta no tiene permisos de administrador o está inactiva.';
       return;
     }
-
-    isLoading.value = true;
-    const path = FILE_PATHS[section];
-    const sha = await fetchFileSha(path);
-    const endpoint = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}`;
-
-    const body = {
-      message: `chore(admin): update ${path}`,
-      content: textToBase64(fileToExport(section)),
-      branch: BRANCH,
-    };
-
-    if (sha) {
-      body.sha = sha;
+    loginForm.value = { email: '', password: '' };
+    showLoginForm.value = false;
+  } catch (err) {
+    const CODE = err.code || '';
+    if (
+      CODE === 'auth/invalid-credential'
+      || CODE === 'auth/wrong-password'
+      || CODE === 'auth/user-not-found'
+      || CODE === 'auth/invalid-email'
+    ) {
+      loginError.value = 'Correo o contraseña incorrectos.';
+    } else {
+      loginError.value = `Error al iniciar sesión: ${err.message}`;
     }
+  } finally {
+    loginLoading.value = false;
+  }
+}
 
-    const response = await fetch(endpoint, {
-      method: 'PUT',
-      headers: buildGitHubHeaders(),
-      body: JSON.stringify(body),
-    });
+async function logoutAdmin() {
+  await signOut(auth);
+  showLoginForm.value = false;
+  panelError.value = '';
+  successMessage.value = '';
+}
 
-    if (!response.ok) {
-      throw new Error(`No se pudo guardar ${path} (${response.status}).`);
+/* ======================================
+   CRUD operations
+====================================== */
+async function saveSection(section) {
+  panelError.value = '';
+  successMessage.value = '';
+  isLoading.value = true;
+  try {
+    validateItems(section);
+    for (const item of draftData.value[section]) {
+      const { _docId, ...rest } = item;
+      const normalized = normalizeItem(section, rest);
+      if (_docId) {
+        await updateDoc(doc(db, section, _docId), normalized);
+      } else {
+        const newRef = await addDoc(collection(db, section), normalized);
+        item._docId = newRef.id;
+      }
     }
-
-    successMessage.value = `${sectionLabel.value} guardados y subidos a GitHub correctamente.`;
-  } catch (error) {
-    console.error(error);
-    panelError.value = error?.message
-      || 'No se pudo guardar en GitHub. Verifica VUE_APP_GITHUB_USER/REPO/BRANCH/TOKEN y que el token tenga permisos de Contents (Read and write).';
+    successMessage.value = `${sectionLabel.value} guardados en Firestore correctamente.`;
+  } catch (err) {
+    console.error(err);
+    panelError.value = err?.message || `Error al guardar en Firestore.`;
   } finally {
     isLoading.value = false;
   }
 }
 
-function addItem() {
-  const nextId =
-    Math.max(0, ...activeItems.value.map((item) => sanitizeId(item.id, 0))) + 1;
+async function removeItem(index) {
+  panelError.value = '';
+  successMessage.value = '';
+  const item = activeItems.value[index];
+  if (item._docId) {
+    try {
+      await deleteDoc(doc(db, activeSection.value, item._docId));
+    } catch (err) {
+      panelError.value = `Error al eliminar: ${err.message}`;
+      return;
+    }
+  }
+  activeItems.value.splice(index, 1);
+  successMessage.value = 'Elemento eliminado.';
+}
 
+function addItem() {
   if (activeSection.value === 'articles') {
     activeItems.value.push({
-      id: nextId,
+      _docId: null,
       title: '',
       authors: '',
       category: '',
@@ -219,52 +281,28 @@ function addItem() {
       image: null,
       featured: false,
     });
-    return;
+  } else {
+    activeItems.value.push({
+      _docId: null,
+      title: '',
+      author: '',
+      authorBio: '',
+      date: '',
+      excerpt: '',
+      content: '',
+      category: '',
+      featured: false,
+    });
   }
-
-  activeItems.value.push({
-    id: nextId,
-    title: '',
-    author: '',
-    authorBio: '',
-    date: '',
-    excerpt: '',
-    content: '',
-    category: '',
-    featured: false,
-  });
 }
 
-function removeItem(index) {
-  activeItems.value.splice(index, 1);
-}
-
-function resetCurrentSection() {
-  draftData.value[activeSection.value] = deepClone(initialData[activeSection.value]);
+async function resetCurrentSection() {
   panelError.value = '';
-  successMessage.value = 'Se restableció la sección actual a los datos iniciales.';
-}
-
-function loginAdmin() {
-  loginError.value = '';
-
-  if (
-    loginForm.value.user.trim().toLowerCase() === ADMIN_USER
-    && loginForm.value.password === ADMIN_PASSWORD
-  ) {
-    isAdmin.value = true;
-    sessionStorage.setItem(SESSION_STORAGE_KEY, 'true');
-    loginForm.value = { user: '', password: '' };
-    return;
-  }
-
-  loginError.value = 'Credenciales inválidas.';
-}
-
-function logoutAdmin() {
-  isAdmin.value = false;
-  sessionStorage.removeItem(SESSION_STORAGE_KEY);
-  showLoginForm.value = false;
+  successMessage.value = '';
+  isLoading.value = true;
+  await loadSection(activeSection.value);
+  isLoading.value = false;
+  successMessage.value = 'Sección recargada desde Firestore.';
 }
 </script>
 
@@ -280,160 +318,186 @@ function logoutAdmin() {
         Gestiona artículos y opiniones de derecho corporativo para emprendedores desde una sola vista.
       </p>
 
-      <p class="warning-text">
-        ⚠️ Para subir cambios remotos necesitas un token de GitHub con permisos de contenido.
-      </p>
-      <p class="warning-text warning-text--muted">
-        Este panel es de administración básica en frontend: no uses tokens de alto privilegio y evita exponerlo en entornos públicos.
-      </p>
-      <p v-if="!canSyncWithGitHub" class="warning-text warning-text--muted">
-        Variables faltantes: puedes editar visualmente, pero el guardado remoto está deshabilitado.
-      </p>
+      <!-- Cargando estado de autenticación -->
+      <div v-if="authLoading" class="auth-loading">Verificando sesión…</div>
 
-      <div v-if="!isAdmin" class="author-toggle-wrapper">
-        <button class="toggle-login-btn" @click="showLoginForm = !showLoginForm">
-          {{ showLoginForm ? 'Cancelar' : '🔒 Acceso administrador' }}
-        </button>
-      </div>
-
-      <div v-if="!isAdmin && showLoginForm" class="admin-box">
-        <h2>Ingreso de administrador</h2>
-        <div class="form-grid form-grid--auth">
-          <input v-model="loginForm.user" type="text" placeholder="Usuario" />
-          <input v-model="loginForm.password" type="password" placeholder="Contraseña" />
-        </div>
-        <button class="primary-btn" @click="loginAdmin">Ingresar</button>
-        <p v-if="loginError" class="error-text">{{ loginError }}</p>
-      </div>
-
-      <section v-if="isAdmin" class="admin-panel">
-        <div class="admin-panel-header">
-          <h2>Editor de contenido</h2>
-          <button class="secondary-btn" @click="logoutAdmin">Cerrar sesión</button>
-        </div>
-
-        <div class="section-switcher">
-          <button
-            class="switch-btn"
-            :class="{ 'switch-btn--active': activeSection === 'articles' }"
-            @click="activeSection = 'articles'"
-          >
-            Artículos
-          </button>
-          <button
-            class="switch-btn"
-            :class="{ 'switch-btn--active': activeSection === 'opinions' }"
-            @click="activeSection = 'opinions'"
-          >
-            Opiniones
+      <template v-else>
+        <!-- Botón de acceso si no está autenticado -->
+        <div v-if="!isAdmin" class="author-toggle-wrapper">
+          <button class="toggle-login-btn" @click="showLoginForm = !showLoginForm">
+            {{ showLoginForm ? 'Cancelar' : '🔒 Acceso administrador' }}
           </button>
         </div>
 
-        <div class="actions-row">
-          <button class="primary-btn" @click="addItem">Agregar {{ activeSection === 'articles' ? 'artículo' : 'opinión' }}</button>
-          <button class="secondary-btn" @click="resetCurrentSection">Restablecer</button>
-          <button
-            class="primary-btn"
-            :disabled="!canSyncWithGitHub || isLoading"
-            @click="uploadSection(activeSection)"
-          >
-            {{ isLoading ? 'Guardando...' : `Guardar ${sectionLabel}` }}
+        <!-- Formulario de login -->
+        <div v-if="!isAdmin && showLoginForm" class="admin-box">
+          <h2>Ingreso de administrador</h2>
+          <div class="form-grid form-grid--auth">
+            <label>
+              Correo electrónico
+              <input
+                v-model="loginForm.email"
+                type="email"
+                placeholder="admin@ejemplo.com"
+                autocomplete="email"
+              />
+            </label>
+            <label>
+              Contraseña
+              <input
+                v-model="loginForm.password"
+                type="password"
+                placeholder="Contraseña"
+                autocomplete="current-password"
+                @keyup.enter="loginAdmin"
+              />
+            </label>
+          </div>
+          <button class="primary-btn" :disabled="loginLoading" @click="loginAdmin">
+            {{ loginLoading ? 'Verificando…' : 'Ingresar' }}
           </button>
+          <p v-if="loginError" class="error-text">{{ loginError }}</p>
         </div>
 
-        <p v-if="panelError" class="error-text">{{ panelError }}</p>
-        <p v-if="successMessage" class="success-text">{{ successMessage }}</p>
+        <!-- Panel de edición -->
+        <section v-if="isAdmin" class="admin-panel">
+          <div class="admin-panel-header">
+            <h2>Editor de contenido</h2>
+            <button class="secondary-btn" @click="logoutAdmin">Cerrar sesión</button>
+          </div>
 
-        <div class="items-list">
-          <article v-for="(item, index) in activeItems" :key="`${activeSection}-${index}-${item.id}`" class="item-card">
-            <div class="item-card-header">
-              <h3>#{{ index + 1 }}</h3>
-              <button class="danger-btn" @click="removeItem(index)">Eliminar</button>
-            </div>
+          <div class="section-switcher">
+            <button
+              class="switch-btn"
+              :class="{ 'switch-btn--active': activeSection === 'articles' }"
+              @click="activeSection = 'articles'"
+            >
+              Artículos
+            </button>
+            <button
+              class="switch-btn"
+              :class="{ 'switch-btn--active': activeSection === 'opinions' }"
+              @click="activeSection = 'opinions'"
+            >
+              Opiniones
+            </button>
+          </div>
 
-            <div class="form-grid">
-              <label>
-                ID
-                <input v-model.number="item.id" type="number" min="1" />
-              </label>
+          <div class="actions-row">
+            <button class="primary-btn" @click="addItem">
+              Agregar {{ activeSection === 'articles' ? 'artículo' : 'opinión' }}
+            </button>
+            <button class="secondary-btn" :disabled="isLoading" @click="resetCurrentSection">
+              Recargar
+            </button>
+            <button
+              class="primary-btn"
+              :disabled="isLoading"
+              @click="saveSection(activeSection)"
+            >
+              {{ isLoading ? 'Guardando…' : `Guardar ${sectionLabel}` }}
+            </button>
+          </div>
 
-              <label>
-                Título
-                <input v-model="item.title" type="text" />
-              </label>
+          <p v-if="panelError" class="error-text">{{ panelError }}</p>
+          <p v-if="successMessage" class="success-text">{{ successMessage }}</p>
 
-              <template v-if="activeSection === 'articles'">
+          <div v-if="isLoading && activeItems.length === 0" class="panel-loading">
+            Cargando datos…
+          </div>
+
+          <div class="items-list">
+            <article
+              v-for="(item, index) in activeItems"
+              :key="item._docId || `new-${index}`"
+              class="item-card"
+            >
+              <div class="item-card-header">
+                <h3>#{{ index + 1 }}{{ item._docId ? '' : ' (nuevo)' }}</h3>
+                <button class="danger-btn" :disabled="isLoading" @click="removeItem(index)">
+                  Eliminar
+                </button>
+              </div>
+
+              <div class="form-grid">
                 <label>
-                  Autores
-                  <input v-model="item.authors" type="text" />
+                  Título
+                  <input v-model="item.title" type="text" />
                 </label>
 
-                <label>
-                  Categoría
-                  <input v-model="item.category" type="text" />
-                </label>
+                <template v-if="activeSection === 'articles'">
+                  <label>
+                    Autores
+                    <input v-model="item.authors" type="text" />
+                  </label>
 
-                <label>
-                  Fecha
-                  <input v-model="item.date" type="date" />
-                </label>
+                  <label>
+                    Categoría
+                    <input v-model="item.category" type="text" />
+                  </label>
 
-                <label>
-                  PDF URL
-                  <input v-model="item.pdfUrl" type="text" />
-                </label>
+                  <label>
+                    Fecha
+                    <input v-model="item.date" type="date" />
+                  </label>
 
-                <label>
-                  Imagen
-                  <input v-model="item.image" type="text" placeholder="URL o vacío para null" />
-                </label>
+                  <label>
+                    PDF URL
+                    <input v-model="item.pdfUrl" type="text" />
+                  </label>
 
-                <label class="field-full">
-                  Resumen
-                  <textarea v-model="item.abstract" rows="5" />
-                </label>
-              </template>
+                  <label>
+                    Imagen
+                    <input v-model="item.image" type="text" placeholder="URL o vacío para null" />
+                  </label>
 
-              <template v-else>
-                <label>
-                  Autor
-                  <input v-model="item.author" type="text" />
-                </label>
+                  <label class="field-full">
+                    Resumen
+                    <textarea v-model="item.abstract" rows="5" />
+                  </label>
+                </template>
 
-                <label>
-                  Bio del autor
-                  <input v-model="item.authorBio" type="text" />
-                </label>
+                <template v-else>
+                  <label>
+                    Autor
+                    <input v-model="item.author" type="text" />
+                  </label>
 
-                <label>
-                  Categoría
-                  <input v-model="item.category" type="text" />
-                </label>
+                  <label>
+                    Bio del autor
+                    <input v-model="item.authorBio" type="text" />
+                  </label>
 
-                <label>
-                  Fecha
-                  <input v-model="item.date" type="date" />
-                </label>
+                  <label>
+                    Categoría
+                    <input v-model="item.category" type="text" />
+                  </label>
 
-                <label class="field-full">
-                  Extracto
-                  <textarea v-model="item.excerpt" rows="3" />
-                </label>
+                  <label>
+                    Fecha
+                    <input v-model="item.date" type="date" />
+                  </label>
 
-                <label class="field-full">
-                  Contenido
-                  <textarea v-model="item.content" rows="8" />
-                </label>
-              </template>
+                  <label class="field-full">
+                    Extracto
+                    <textarea v-model="item.excerpt" rows="3" />
+                  </label>
 
-              <label class="checkbox-field">
-                <input v-model="item.featured" type="checkbox" />
-                Destacado (featured)
-              </label>
-            </div>
-          </article>
-        </div>
-      </section>
+                  <label class="field-full">
+                    Contenido
+                    <textarea v-model="item.content" rows="8" />
+                  </label>
+                </template>
+
+                <label class="checkbox-field">
+                  <input v-model="item.featured" type="checkbox" />
+                  Destacado (featured)
+                </label>
+              </div>
+            </article>
+          </div>
+        </section>
+      </template>
     </section>
   </main>
 
@@ -461,13 +525,12 @@ function logoutAdmin() {
   color: #444;
 }
 
-.warning-text {
-  @apply mb-2 text-[0.92rem];
-  color: #8a5a00;
+.auth-loading {
+  @apply text-center py-10 text-[#888] text-[0.95rem];
 }
 
-.warning-text--muted {
-  color: #916d3f;
+.panel-loading {
+  @apply text-center py-6 text-[#888] text-[0.9rem];
 }
 
 .admin-box,
@@ -545,9 +608,17 @@ textarea {
   color: #fff;
 }
 
+.secondary-btn:disabled {
+  @apply opacity-60 cursor-not-allowed;
+}
+
 .danger-btn {
   background-color: #d64949;
   color: #fff;
+}
+
+.danger-btn:disabled {
+  @apply opacity-60 cursor-not-allowed;
 }
 
 .error-text {
