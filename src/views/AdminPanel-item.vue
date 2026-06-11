@@ -35,7 +35,7 @@ const successMessage = ref('');
 const isLoading = ref(false);
 const activeSection = ref('articles');
 
-const draftData = ref({ articles: [], opinions: [] });
+const draftData = ref({ articles: [], opinions: [], admins: [] });
 
 const activeItems = computed({
   get() {
@@ -46,9 +46,17 @@ const activeItems = computed({
   },
 });
 
-const sectionLabel = computed(() =>
-  activeSection.value === 'articles' ? 'Artículos' : 'Opiniones',
-);
+const sectionLabel = computed(() => {
+  if (activeSection.value === 'articles') return 'Artículos';
+  if (activeSection.value === 'opinions') return 'Opiniones';
+  return 'Administradores';
+});
+
+const sectionAddLabel = computed(() => {
+  if (activeSection.value === 'articles') return 'artículo';
+  if (activeSection.value === 'opinions') return 'opinión';
+  return 'administrador';
+});
 
 /* ======================================
    Helpers
@@ -67,6 +75,18 @@ function normalizeItem(section, item) {
       featured: Boolean(item.featured),
     };
   }
+  if (section === 'admins') {
+    const role = (item.role || item.rol || 'admin').trim() || 'admin';
+    const trimmedUid = String(item.uid || '').trim();
+    return {
+      email: (item.email || '').trim(),
+      name: (item.name || '').trim(),
+      uid: trimmedUid ? trimmedUid : null,
+      rol: role,
+      role,
+      active: item.active !== false,
+    };
+  }
   return {
     title: (item.title || '').trim(),
     author: (item.author || '').trim(),
@@ -82,6 +102,7 @@ function normalizeItem(section, item) {
 const requiredFields = {
   articles: ['title', 'authors', 'category', 'date', 'abstract'],
   opinions: ['title', 'author', 'authorBio', 'date', 'excerpt', 'content', 'category'],
+  admins: ['email', 'name'],
 };
 
 function validateItems(section) {
@@ -95,6 +116,17 @@ function validateItems(section) {
         throw new Error(
           `Completa el campo "${field}" en ${section === 'articles' ? 'artículo' : 'opinión'} #${index + 1}.`,
         );
+      }
+    }
+    if (section === 'admins') {
+      const email = String(item.email || '').trim();
+      const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      if (!isValidEmail) {
+        throw new Error(`El correo en administrador #${index + 1} no es válido.`);
+      }
+      const role = String(item.rol || item.role || '').trim();
+      if (!role) {
+        throw new Error(`Completa el rol en administrador #${index + 1}.`);
       }
     }
   }
@@ -136,13 +168,28 @@ async function loadSection(section) {
   try {
     const snapshot = await getDocs(collection(db, section));
     const docs = snapshot.docs.map((d) => ({ _docId: d.id, ...d.data() }));
-    docs.sort((a, b) => {
-      if (!a.date && !b.date) return 0;
-      if (!a.date) return 1;
-      if (!b.date) return -1;
-      return b.date.localeCompare(a.date);
-    });
-    draftData.value[section] = docs;
+    if (section === 'admins') {
+      const normalizedAdmins = docs.map((item) => ({
+        ...item,
+        rol: item.role || item.rol || 'admin',
+        role: item.role || item.rol || 'admin',
+        active: item.active !== false,
+      }));
+      normalizedAdmins.sort((a, b) => {
+        const left = String(a.name || a.email || '').toLowerCase();
+        const right = String(b.name || b.email || '').toLowerCase();
+        return left.localeCompare(right);
+      });
+      draftData.value[section] = normalizedAdmins;
+    } else {
+      docs.sort((a, b) => {
+        if (!a.date && !b.date) return 0;
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return b.date.localeCompare(a.date);
+      });
+      draftData.value[section] = docs;
+    }
   } catch (err) {
     panelError.value = `Error cargando ${section}: ${err.message}`;
   }
@@ -150,7 +197,7 @@ async function loadSection(section) {
 
 async function loadAllSections() {
   isLoading.value = true;
-  await Promise.all([loadSection('articles'), loadSection('opinions')]);
+  await Promise.all([loadSection('articles'), loadSection('opinions'), loadSection('admins')]);
   isLoading.value = false;
 }
 
@@ -281,7 +328,7 @@ function addItem() {
       image: null,
       featured: false,
     });
-  } else {
+  } else if (activeSection.value === 'opinions') {
     activeItems.value.push({
       _docId: null,
       title: '',
@@ -292,6 +339,16 @@ function addItem() {
       content: '',
       category: '',
       featured: false,
+    });
+  } else {
+    activeItems.value.push({
+      _docId: null,
+      email: '',
+      name: '',
+      uid: '',
+      rol: 'admin',
+      role: 'admin',
+      active: true,
     });
   }
 }
@@ -315,7 +372,7 @@ async function resetCurrentSection() {
     <section class="admin-container">
       <h1 class="title">Panel administrativo</h1>
       <p class="subtitle">
-        Gestiona artículos y opiniones de derecho corporativo para emprendedores desde una sola vista.
+        Gestiona artículos, opiniones y administradores desde una sola vista.
       </p>
 
       <!-- Cargando estado de autenticación -->
@@ -366,6 +423,19 @@ async function resetCurrentSection() {
             <button class="secondary-btn" @click="logoutAdmin">Cerrar sesión</button>
           </div>
 
+          <div class="info-box">
+            <p><strong>Autenticación:</strong> el inicio de sesión real usa Firebase Authentication.</p>
+            <p><strong>Autorización:</strong> la colección <code>admins</code> define permisos y estado activo.</p>
+            <p>
+              <strong>Campo contraseña en Firestore:</strong> si existe en <code>admins</code>, se ignora para
+              autenticación.
+            </p>
+            <p>
+              Si un registro en <code>admins</code> no tiene cuenta en Firebase Auth, no podrá iniciar sesión
+              hasta crearla en Firebase Authentication.
+            </p>
+          </div>
+
           <div class="section-switcher">
             <button
               class="switch-btn"
@@ -381,11 +451,18 @@ async function resetCurrentSection() {
             >
               Opiniones
             </button>
+            <button
+              class="switch-btn"
+              :class="{ 'switch-btn--active': activeSection === 'admins' }"
+              @click="activeSection = 'admins'"
+            >
+              Administradores
+            </button>
           </div>
 
           <div class="actions-row">
             <button class="primary-btn" @click="addItem">
-              Agregar {{ activeSection === 'articles' ? 'artículo' : 'opinión' }}
+              Agregar {{ sectionAddLabel }}
             </button>
             <button class="secondary-btn" :disabled="isLoading" @click="resetCurrentSection">
               Recargar
@@ -457,7 +534,7 @@ async function resetCurrentSection() {
                   </label>
                 </template>
 
-                <template v-else>
+                <template v-else-if="activeSection === 'opinions'">
                   <label>
                     Autor
                     <input v-model="item.author" type="text" />
@@ -489,9 +566,40 @@ async function resetCurrentSection() {
                   </label>
                 </template>
 
-                <label class="checkbox-field">
+                <template v-else>
+                  <label>
+                    Nombre
+                    <input v-model="item.name" type="text" />
+                  </label>
+
+                  <label>
+                    Correo
+                    <input v-model="item.email" type="email" />
+                  </label>
+
+                  <label>
+                    UID (Firebase Auth)
+                    <input
+                      v-model="item.uid"
+                      type="text"
+                      placeholder="Opcional si aún no existe la cuenta Auth"
+                    />
+                  </label>
+
+                  <label>
+                    Rol
+                    <input v-model="item.role" type="text" />
+                  </label>
+                </template>
+
+                <label v-if="activeSection !== 'admins'" class="checkbox-field">
                   <input v-model="item.featured" type="checkbox" />
                   Destacado (featured)
+                </label>
+
+                <label v-else class="checkbox-field">
+                  <input v-model="item.active" type="checkbox" />
+                  Administrador activo
                 </label>
               </div>
             </article>
@@ -544,6 +652,21 @@ async function resetCurrentSection() {
 .item-card-header,
 .actions-row {
   @apply flex justify-between items-center gap-3;
+}
+
+.info-box {
+  @apply rounded-xl p-4 mb-4 text-[0.9rem];
+  background: #e7edf5;
+  color: #2a3f5f;
+}
+
+.info-box p {
+  @apply my-1;
+}
+
+.info-box code {
+  @apply px-1 rounded;
+  background: rgba(69, 106, 154, 0.15);
 }
 
 .section-switcher {
